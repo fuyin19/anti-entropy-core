@@ -49,7 +49,7 @@ The caller is responsible for providing an owned, disposable stage. `repair` may
 
 ## Collaborative Workspace envelope v1
 
-The outer contract root contains byte-exact contract `AGENTS.md` and `CLAUDE.md`, `collaborative-workspace.json`, and ordinary `ref/` and `agent-workbench/` directories. Safe additional ordinary entries are allowed and have no Core-defined lifecycle. `ref/` is human-owned; Core inspection and completion never change its content. The outer validator treats `agent-workbench/` as the independently validated inner contract root.
+The outer contract root contains byte-exact contract `AGENTS.md` and `CLAUDE.md`, `collaborative-workspace.json`, and ordinary `ref/` and `agent-workbench/` directories. `ref/_outdated/` is a required human-owned archive role excluded from active projection; its safe ordinary hierarchy may contain valid Knowledge Unit Envelope v2 roots. Safe additional ordinary entries are allowed and have no Core-defined lifecycle. The outer validator treats `agent-workbench/` as the independently validated inner contract root.
 
 The outer manifest has exactly:
 
@@ -64,11 +64,11 @@ The outer manifest has exactly:
 }
 ```
 
-The outer `stage.complete` requires this manifest to exist and be valid. It may exclusively add only missing fixed guides, `ref/`, and `agent-workbench/`. It does not construct or validate the inner contract.
+The outer `stage.complete` requires this manifest to exist and be valid. It may exclusively add only missing fixed guides, `ref/`, `ref/_outdated/`, and `agent-workbench/`. It does not construct or validate the inner contract.
 
 ## Agent Workbench envelope v1
 
-The inner contract root contains byte-exact contract `AGENTS.md` and `CLAUDE.md` plus ordinary `ref/`, `temp/`, and `output/` directories. Safe additional ordinary entries are allowed and have no Core-defined lifecycle. `ref/` is strict: it contains `.agent-workbench.json`, optional path-container directories, and exactly the manifest-declared Knowledge Unit Envelope v2 roots. `temp/` and `output/` may contain safe ordinary data.
+The inner contract root contains byte-exact contract `AGENTS.md` and `CLAUDE.md` plus ordinary `ref/`, `temp/`, and `output/` directories. Safe additional ordinary entries are allowed and have no Core-defined lifecycle. Active `ref/` is strict: it contains `.agent-workbench.json`, optional path-container directories, exactly the manifest-declared Knowledge Unit Envelope v2 roots, and the required system-owned `_outdated/` history. `temp/` and `output/` may contain safe ordinary data.
 
 The inner manifest at `ref/.agent-workbench.json` has exactly:
 
@@ -98,9 +98,11 @@ The inner manifest at `ref/.agent-workbench.json` has exactly:
 }
 ```
 
-`generation` is a positive integer. Quality is `ready` or `ready_with_warnings`; warning quality requires a non-empty manifest warning or item issue, while ready quality permits neither. Source kinds are `file` and `knowledge_unit`. Fixed provider routes are `file-conversion`, `markdown-conversion`, and `knowledge-unit-copy`; copied Knowledge Units must use the last route and retain the same source/prepared tree digest. Records and items are sorted and one-to-one, and `unit_path` exactly equals `source_path` so a full source basename is preserved.
+`generation` is a positive integer. Quality is `ready` or `ready_with_warnings`; warning quality requires a non-empty manifest warning or item issue, while ready quality permits neither. Source kinds are `file` and `knowledge_unit`. Fixed provider routes are `file-conversion`, `markdown-conversion`, and `knowledge-unit-copy`; copied Knowledge Units must use the last route and retain the same source/prepared tree digest. Records and items are sorted and one-to-one, and `unit_path` exactly equals `source_path` so a full source basename is preserved. The manifest remains active-only: `_outdated/` is not listed in records or items.
 
-The inner `stage.complete` requires `ref/.agent-workbench.json` and its declared Knowledge Units to exist and validate first. It may exclusively add only missing fixed guides, `temp/`, and `output/`. It never creates a manifest or payload.
+Inner history batches are named exactly `generation-<old-generation>-<UTC YYYYMMDDTHHMMZ>`. At most one batch may exist per retired generation, its generation must be lower than the active manifest generation, it must be nonempty, and its leaves at original source paths must be valid Knowledge Unit Envelope v2 roots. Intermediate archive entries are directories only.
+
+The inner `stage.complete` requires `ref/.agent-workbench.json` and its declared Knowledge Units to exist and validate first. It may exclusively add only missing fixed guides, `ref/_outdated/`, `temp/`, and `output/`. It never creates a manifest or payload.
 
 ## Workspace canonicalization and safety
 

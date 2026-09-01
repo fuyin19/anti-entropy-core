@@ -68,6 +68,7 @@ def _inner_manifest(
     *,
     source_kind: str = "file",
     quality: str = "ready",
+    generation: int = 1,
 ) -> dict[str, object]:
     records: list[dict[str, str]] = []
     items: list[dict[str, object]] = []
@@ -95,7 +96,7 @@ def _inner_manifest(
     return {
         "contract": AGENT_WORKBENCH_CONTRACT,
         "workspace_id": workspace_id,
-        "generation": 1,
+        "generation": generation,
         "quality": quality,
         "source_records": records,
         "source_tree_digest": source_records_digest(records),
@@ -117,7 +118,7 @@ def _snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
 class CollaborativeWorkspaceCoreTests(unittest.TestCase):
     def test_version_and_extension_discovery_preserve_legacy_command_list(self) -> None:
         legacy = dispatch("capabilities", {})
-        self.assertEqual(VERSION, "1.1.0")
+        self.assertEqual(VERSION, "1.2.0")
         self.assertEqual(legacy["data"]["commands"], ["capabilities", "inspect", "validate", "repair", "stage.complete"])
         self.assertEqual(
             legacy["data"]["extensions"]["collaborative_workspace"]["capabilities_command"],
@@ -138,6 +139,15 @@ class CollaborativeWorkspaceCoreTests(unittest.TestCase):
         )
         self.assertFalse(result["data"]["mutation_boundary"]["creates_manifests_or_payloads"])
         self.assertFalse(result["data"]["mutation_boundary"]["moves_or_publishes_roots"])
+        self.assertTrue(result["data"]["mutation_boundary"]["adds_missing_navigation_and_fixed_directories_only"])
+        self.assertEqual(
+            result["data"]["fixed_paths"][COLLABORATIVE_WORKSPACE_CONTRACT]["outdated"],
+            "ref/_outdated",
+        )
+        self.assertEqual(
+            result["data"]["fixed_paths"][AGENT_WORKBENCH_CONTRACT]["outdated"],
+            "ref/_outdated",
+        )
 
     def test_workspace_requests_require_exact_path_and_contract(self) -> None:
         requests = [
@@ -162,9 +172,13 @@ class CollaborativeWorkspaceCoreTests(unittest.TestCase):
             result = dispatch("collaborative_workspace.stage.complete", _request(root, COLLABORATIVE_WORKSPACE_CONTRACT))
             self.assertEqual((result["status"], result["exit_code"]), ("ok", 0))
             self.assertEqual(result["data"]["workspace_id"], workspace_id)
-            self.assertEqual(result["data"]["changes"], ["AGENTS.md", "CLAUDE.md", "ref/", "agent-workbench/"])
+            self.assertEqual(
+                result["data"]["changes"],
+                ["AGENTS.md", "CLAUDE.md", "ref/", "agent-workbench/", "ref/_outdated/"],
+            )
             self.assertEqual((root / "collaborative-workspace.json").read_bytes(), manifest_bytes)
             self.assertEqual((root / "CLAUDE.md").read_bytes(), b"@AGENTS.md\n")
+            self.assertTrue((root / "ref" / "_outdated").is_dir())
 
             before = _snapshot(root)
             again = dispatch("collaborative_workspace.stage.complete", _request(root, COLLABORATIVE_WORKSPACE_CONTRACT))
@@ -207,11 +221,85 @@ class CollaborativeWorkspaceCoreTests(unittest.TestCase):
 
             completed = dispatch("collaborative_workspace.stage.complete", _request(root, AGENT_WORKBENCH_CONTRACT))
             self.assertEqual((completed["status"], completed["exit_code"]), ("ok", 0))
-            self.assertEqual(completed["data"]["changes"], ["AGENTS.md", "CLAUDE.md", "temp/", "output/"])
+            self.assertEqual(
+                completed["data"]["changes"],
+                ["AGENTS.md", "CLAUDE.md", "temp/", "output/", "ref/_outdated/"],
+            )
             validated = dispatch("collaborative_workspace.validate", _request(root, AGENT_WORKBENCH_CONTRACT))
             self.assertEqual((validated["status"], validated["data"]["quality"]), ("ok", "ready"))
             self.assertEqual(validated["data"]["items"][0]["unit_path"], source_path)
             self.assertEqual(validated["data"]["source_tree_digest"], source_records_digest(manifest["source_records"]))
+
+    def test_outer_outdated_is_required_safe_flexible_and_not_active_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            _write_json(root / "collaborative-workspace.json", _outer_manifest(str(uuid.uuid4())))
+            completed = dispatch("collaborative_workspace.stage.complete", _request(root, COLLABORATIVE_WORKSPACE_CONTRACT))
+            self.assertEqual(completed["status"], "ok")
+
+            archive = root / "ref" / "_outdated"
+            (archive / "human-layout" / "old").mkdir(parents=True)
+            (archive / "human-layout" / "old" / "memo.bin").write_bytes(b"retired")
+            before = _snapshot(root)
+            validated = dispatch("collaborative_workspace.validate", _request(root, COLLABORATIVE_WORKSPACE_CONTRACT))
+            self.assertEqual((validated["status"], validated["data"]["valid"]), ("ok", True))
+            self.assertEqual(before, _snapshot(root))
+
+            (archive / "human-layout" / "CLAUDE.local.md").write_bytes(b"not data")
+            invalid = dispatch("collaborative_workspace.validate", _request(root, COLLABORATIVE_WORKSPACE_CONTRACT))
+            self.assertIn("instruction_control_path", {issue["code"] for issue in invalid["issues"]})
+
+    def test_inner_outdated_accepts_strict_generation_batches_with_valid_units(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "agent-workbench"
+            ref = root / "ref"
+            ref.mkdir(parents=True)
+            _complete_unit(ref / "current.docx", "current.docx")
+            manifest = _inner_manifest(str(uuid.uuid4()), ref, "current.docx", generation=3)
+            _write_json(ref / ".agent-workbench.json", manifest)
+            self.assertEqual(
+                dispatch("collaborative_workspace.stage.complete", _request(root, AGENT_WORKBENCH_CONTRACT))["status"],
+                "ok",
+            )
+
+            archived = ref / "_outdated" / "generation-1-20260901T0730Z" / "group" / "old.docx"
+            _complete_unit(archived, "old.docx")
+            before = _snapshot(root)
+            validated = dispatch("collaborative_workspace.validate", _request(root, AGENT_WORKBENCH_CONTRACT))
+            self.assertEqual((validated["status"], validated["data"]["valid"]), ("ok", True))
+            self.assertEqual(before, _snapshot(root))
+
+    def test_inner_outdated_rejects_invalid_batches_generations_and_non_ku_leaves(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "agent-workbench"
+            ref = root / "ref"
+            ref.mkdir(parents=True)
+            _write_json(ref / ".agent-workbench.json", _inner_manifest(str(uuid.uuid4()), ref, generation=3))
+            self.assertEqual(
+                dispatch("collaborative_workspace.stage.complete", _request(root, AGENT_WORKBENCH_CONTRACT))["status"],
+                "ok",
+            )
+            outdated = ref / "_outdated"
+            _complete_unit(outdated / "generation-1-20260901T0730Z" / "one", "one")
+            _complete_unit(outdated / "generation-1-20260901T0731Z" / "two", "two")
+            _complete_unit(outdated / "generation-3-20260901T0732Z" / "three", "three")
+            (outdated / "generation-2-20261301T0730Z" / "raw").mkdir(parents=True)
+            (outdated / "generation-2-20261301T0730Z" / "raw" / "not-a-ku.bin").write_bytes(b"raw")
+            (outdated / "bad-batch" / "empty").mkdir(parents=True)
+
+            result = dispatch("collaborative_workspace.validate", _request(root, AGENT_WORKBENCH_CONTRACT))
+            codes = {issue["code"] for issue in result["issues"]}
+            self.assertTrue(
+                {
+                    "duplicate_outdated_generation",
+                    "invalid_outdated_generation",
+                    "invalid_outdated_batch",
+                    "outdated_container_not_directory",
+                    "empty_outdated_container",
+                }
+                <= codes
+            )
 
     def test_warning_projection_is_valid_but_inconsistent_quality_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -421,8 +509,8 @@ class CollaborativeWorkspaceCoreTests(unittest.TestCase):
         self.assertEqual(outer_claude, b"@AGENTS.md\n")
         self.assertEqual(inner_claude, b"@AGENTS.md\n")
         self.assertEqual(hashlib.sha256(outer_claude).hexdigest(), hashlib.sha256(inner_claude).hexdigest())
-        self.assertEqual(hashlib.sha256(outer_agents).hexdigest(), "74329a91871462e0a6c90ef357980fb7430747726c8d0864db991d1c4d5b4606")
-        self.assertEqual(hashlib.sha256(inner_agents).hexdigest(), "bfc74d73998b0d0e8cb255c33f1c9a50871160932ad11f72f836a4c369a70f6f")
+        self.assertEqual(hashlib.sha256(outer_agents).hexdigest(), "9a435b118dfd6ad62db4992f64687f8caefc073cbde65ab23b05332b8f224e24")
+        self.assertEqual(hashlib.sha256(inner_agents).hexdigest(), "8f247d6828b67419be6025c1772d3be9cdba9d1498d36b6ddcdc4b0cb365efbc")
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink support unavailable")
     def test_workspace_link_is_rejected_when_host_allows_creation(self) -> None:

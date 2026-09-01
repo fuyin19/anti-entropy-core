@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib.resources import files
 
 ABI = "anti-entropy-core.runner/v1"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 ENVELOPE = "knowledge-unit-envelope/v2"
 NAVIGATION_CONTRACT = "knowledge-unit-navigation/v1"
 COMMANDS = ("capabilities", "inspect", "validate", "repair", "stage.complete")

@@ -24,6 +24,8 @@ Collaborative Workspace commands use the same runner and explicitly select one c
 
 The legacy `capabilities.data.commands` list remains unchanged. Discover the workspace extension through `capabilities.data.extensions.collaborative_workspace`, then call `collaborative_workspace.capabilities` for its schemas and mutation boundary.
 
+Both workspace contracts require `ref/_outdated/`. The outer role is a safe human-owned archive excluded from active projection; the inner role accepts only generation-named batches whose leaves are valid Knowledge Unit Envelope v2 roots. Workspace stage completion may create the missing empty role but never archives or moves payload itself.
+
 Run the tests with:
 
 ```text

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import unicodedata
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -44,6 +46,8 @@ _SHA256_LENGTH = 64
 _SOURCE_KINDS = {"file", "knowledge_unit"}
 _PROVIDER_ROUTES = {"knowledge-unit-copy", "file-conversion", "markdown-conversion"}
 _QUALITIES = {"ready", "ready_with_warnings"}
+_OUTDATED = "_outdated"
+_OUTDATED_BATCH = re.compile(r"generation-([1-9][0-9]*)-([0-9]{8}T[0-9]{4}Z)\Z")
 _OUTER_ROLES = {"reference": "ref", "agent_workbench": "agent-workbench"}
 _OUTER_MANIFEST_KEYS = {"contract", "workspace_id", "roles"}
 _INNER_MANIFEST_KEYS = {
@@ -342,6 +346,20 @@ def _check_role_directory(entries: dict[str, tuple[Path, os.stat_result, bool]],
     return True
 
 
+def _check_outdated_directory(reference: Path, issues: list[Issue]) -> bool:
+    relative = f"ref/{_OUTDATED}"
+    path = reference / _OUTDATED
+    try:
+        value = path.lstat()
+    except FileNotFoundError:
+        issues.append(_issue("missing_outdated_directory", "Fixed outdated directory is required", relative))
+        return False
+    if _is_linklike(value, symlink=path.is_symlink()) or not stat.S_ISDIR(value.st_mode):
+        issues.append(_issue("outdated_not_directory", "Fixed outdated path must be an ordinary directory", relative))
+        return False
+    return True
+
+
 def _looks_like_knowledge_unit(directory: Path) -> bool:
     try:
         names = {entry.name for entry in os.scandir(directory)}
@@ -371,8 +389,10 @@ def _scan_safe_tree(
     prefix: str = "",
     allowed_controls: set[str] | None = None,
     ku_aware: bool = False,
+    excluded_paths: set[str] | None = None,
 ) -> None:
     allowed = allowed_controls or set()
+    excluded = excluded_paths or set()
     entries = sorted(os.scandir(directory), key=lambda item: (item.name.casefold(), item.name))
     folded: dict[str, str] = {}
     for entry in entries:
@@ -391,6 +411,8 @@ def _scan_safe_tree(
         if _is_linklike(value, symlink=entry.is_symlink()):
             issues.append(_issue("link_not_allowed", "Links and reparse points are not valid workspace entries", relative))
             continue
+        if relative in excluded:
+            continue
         if stat.S_ISDIR(value.st_mode):
             _check_control_path(relative, True, allowed, issues)
             if ku_aware and _looks_like_knowledge_unit(Path(entry.path)):
@@ -406,7 +428,14 @@ def _scan_safe_tree(
                     )
                 )
                 continue
-            _scan_safe_tree(Path(entry.path), issues, prefix=relative, allowed_controls=allowed, ku_aware=ku_aware)
+            _scan_safe_tree(
+                Path(entry.path),
+                issues,
+                prefix=relative,
+                allowed_controls=allowed,
+                ku_aware=ku_aware,
+                excluded_paths=excluded,
+            )
         elif stat.S_ISREG(value.st_mode):
             _check_control_path(relative, False, allowed, issues)
         else:
@@ -600,6 +629,8 @@ def _validate_projection(root: Path, items: list[dict[str, Any]], issues: list[I
                 if not stat.S_ISREG(value.st_mode):
                     issues.append(_issue("manifest_not_file", "Projection manifest must be an ordinary file", "ref/.agent-workbench.json"))
                 continue
+            if not prefix and entry.name == _OUTDATED:
+                continue
             _check_control_path(f"ref/{relative}", stat.S_ISDIR(value.st_mode), set(), issues)
             if relative in expected:
                 found.add(relative)
@@ -635,6 +666,118 @@ def _validate_projection(root: Path, items: list[dict[str, Any]], issues: list[I
         issues.append(_issue("missing_prepared_unit", "Manifest-declared knowledge unit is missing", f"ref/{relative}"))
 
 
+def _validate_outdated_projection(
+    outdated: Path,
+    current_generation: int | None,
+    issues: list[Issue],
+) -> None:
+    generations: dict[int, str] = {}
+
+    def visit_container(directory: Path, prefix: str) -> None:
+        entries = sorted(os.scandir(directory), key=lambda item: (item.name.casefold(), item.name))
+        if not entries:
+            issues.append(_issue("empty_outdated_container", "Outdated batch containers must not be empty", prefix))
+            return
+        folded: dict[str, str] = {}
+        for entry in entries:
+            relative = f"{prefix}/{entry.name}"
+            key = _path_key(entry.name)
+            if key in folded:
+                issues.append(
+                    _issue(
+                        "name_collision",
+                        "Outdated names collide under Unicode normalization and case folding",
+                        relative,
+                        names=[folded[key], entry.name],
+                    )
+                )
+            else:
+                folded[key] = entry.name
+            message = _component_error(entry.name)
+            if message is not None:
+                issues.append(_issue("invalid_entry_name", message, relative))
+            value = entry.stat(follow_symlinks=False)
+            if _is_linklike(value, symlink=entry.is_symlink()):
+                issues.append(_issue("link_not_allowed", "Links and reparse points are not valid outdated entries", relative))
+                continue
+            _check_control_path(relative, stat.S_ISDIR(value.st_mode), set(), issues)
+            if not stat.S_ISDIR(value.st_mode):
+                issues.append(_issue("outdated_container_not_directory", "Outdated path containers must be directories", relative))
+                continue
+            unit = Path(entry.path)
+            if _looks_like_knowledge_unit(unit):
+                inspection = _inspect_unit(unit)
+                if not inspection.valid:
+                    issues.append(
+                        _issue(
+                            "invalid_outdated_knowledge_unit",
+                            "Outdated item does not satisfy Knowledge Unit Envelope v2",
+                            relative,
+                            issues=[item.as_dict() for item in inspection.issues],
+                        )
+                    )
+                continue
+            visit_container(unit, relative)
+
+    entries = sorted(os.scandir(outdated), key=lambda item: (item.name.casefold(), item.name))
+    folded: dict[str, str] = {}
+    for entry in entries:
+        relative = f"ref/{_OUTDATED}/{entry.name}"
+        key = _path_key(entry.name)
+        if key in folded:
+            issues.append(
+                _issue(
+                    "name_collision",
+                    "Outdated batch names collide under Unicode normalization and case folding",
+                    relative,
+                    names=[folded[key], entry.name],
+                )
+            )
+        else:
+            folded[key] = entry.name
+        message = _component_error(entry.name)
+        if message is not None:
+            issues.append(_issue("invalid_entry_name", message, relative))
+        value = entry.stat(follow_symlinks=False)
+        if _is_linklike(value, symlink=entry.is_symlink()):
+            issues.append(_issue("link_not_allowed", "Links and reparse points are not valid outdated batches", relative))
+            continue
+        if not stat.S_ISDIR(value.st_mode):
+            issues.append(_issue("outdated_batch_not_directory", "Outdated batches must be ordinary directories", relative))
+            continue
+        matched = _OUTDATED_BATCH.fullmatch(entry.name)
+        if matched is None:
+            issues.append(_issue("invalid_outdated_batch", "Outdated batch name does not match the fixed contract", relative))
+        else:
+            generation = int(matched.group(1))
+            try:
+                datetime.strptime(matched.group(2), "%Y%m%dT%H%MZ")
+            except ValueError:
+                issues.append(_issue("invalid_outdated_batch", "Outdated batch timestamp is not a real UTC minute", relative))
+            previous = generations.get(generation)
+            if previous is not None:
+                issues.append(
+                    _issue(
+                        "duplicate_outdated_generation",
+                        "At most one outdated batch is allowed for each retired generation",
+                        relative,
+                        batches=[previous, entry.name],
+                    )
+                )
+            else:
+                generations[generation] = entry.name
+            if current_generation is not None and generation >= current_generation:
+                issues.append(
+                    _issue(
+                        "invalid_outdated_generation",
+                        "Outdated batch generation must be lower than the active manifest generation",
+                        relative,
+                        active_generation=current_generation,
+                    )
+                )
+        visit_container(Path(entry.path), relative)
+
+
 def inspect_workspace(path: Path, contract: str) -> WorkspaceInspection:
     logical_root, root, issues = _root_state(path, contract)
     if issues:
@@ -646,16 +789,25 @@ def inspect_workspace(path: Path, contract: str) -> WorkspaceInspection:
         workspace_id, manifest = _outer_manifest(root, issues)
         ref_valid = _check_role_directory(entries, "ref", issues)
         _check_role_directory(entries, "agent-workbench", issues)
+        outdated_valid = _check_outdated_directory(root / "ref", issues) if ref_valid else False
         for name, entry in entries.items():
             if name == "agent-workbench" or entry[2]:
                 continue
             if name == "ref" and ref_valid:
-                _scan_safe_tree(entry[0], issues, prefix="ref", ku_aware=True)
+                _scan_safe_tree(
+                    entry[0],
+                    issues,
+                    prefix="ref",
+                    ku_aware=True,
+                    excluded_paths={f"ref/{_OUTDATED}"},
+                )
             elif name not in {"AGENTS.md", "CLAUDE.md", "collaborative-workspace.json", "ref"} and stat.S_ISDIR(entry[1].st_mode):
                 _check_control_path(name, True, set(), issues)
                 _scan_safe_tree(entry[0], issues, prefix=name)
             elif name not in {"AGENTS.md", "CLAUDE.md", "collaborative-workspace.json", "ref"}:
                 _check_control_path(name, False, set(), issues)
+        if outdated_valid:
+            _scan_safe_tree(root / "ref" / _OUTDATED, issues, prefix=f"ref/{_OUTDATED}", ku_aware=True)
         details = {
             "manifest_path": "collaborative-workspace.json",
             "roles": manifest.get("roles") if isinstance(manifest, dict) else None,
@@ -665,6 +817,7 @@ def inspect_workspace(path: Path, contract: str) -> WorkspaceInspection:
         _check_role_directory(entries, "temp", issues)
         _check_role_directory(entries, "output", issues)
         workspace_id, manifest, records, items = _inner_manifest(root, issues)
+        outdated_valid = _check_outdated_directory(root / "ref", issues) if ref_valid else False
         for name, entry in entries.items():
             if name == "ref" or entry[2]:
                 continue
@@ -677,6 +830,10 @@ def inspect_workspace(path: Path, contract: str) -> WorkspaceInspection:
                 _check_control_path(name, False, set(), issues)
         if ref_valid:
             _validate_projection(root, items, issues)
+        if outdated_valid:
+            generation = manifest.get("generation") if isinstance(manifest, dict) else None
+            current_generation = generation if isinstance(generation, int) and not isinstance(generation, bool) and generation > 0 else None
+            _validate_outdated_projection(root / "ref" / _OUTDATED, current_generation, issues)
         details = {
             "manifest_path": "ref/.agent-workbench.json",
             "generation": manifest.get("generation") if isinstance(manifest, dict) else None,
@@ -725,6 +882,7 @@ def complete_workspace_stage(path: Path, contract: str) -> tuple[WorkspaceInspec
     repairable = {
         *(('missing_navigation_guide', name) for name in ("AGENTS.md", "CLAUDE.md")),
         *(('missing_role_directory', name) for name in role_names),
+        ('missing_outdated_directory', f"ref/{_OUTDATED}"),
     }
     nonrepairable = [issue for issue in before.issues if (issue.code, issue.path) not in repairable]
     if nonrepairable:
@@ -742,6 +900,10 @@ def complete_workspace_stage(path: Path, contract: str) -> tuple[WorkspaceInspec
         if ("missing_role_directory", name) in missing:
             (root / name).mkdir()
             changes.append(name + "/")
+    outdated = root / "ref" / _OUTDATED
+    if ("missing_role_directory", "ref") in missing or ("missing_outdated_directory", f"ref/{_OUTDATED}") in missing:
+        outdated.mkdir()
+        changes.append(f"ref/{_OUTDATED}/")
 
     after = inspect_workspace(path, contract)
     if not after.valid:
@@ -766,11 +928,13 @@ def collaborative_workspace_capabilities() -> dict[str, Any]:
                 "manifest": "collaborative-workspace.json",
                 "roles": _OUTER_ROLES,
                 "navigation": ["AGENTS.md", "CLAUDE.md"],
+                "outdated": f"ref/{_OUTDATED}",
             },
             AGENT_WORKBENCH_CONTRACT: {
                 "manifest": "ref/.agent-workbench.json",
                 "roles": {"reference": "ref", "temporary": "temp", "output": "output"},
                 "navigation": ["AGENTS.md", "CLAUDE.md"],
+                "outdated": f"ref/{_OUTDATED}",
             },
         },
         "manifest_fields": {
@@ -800,9 +964,14 @@ def collaborative_workspace_capabilities() -> dict[str, Any]:
                 "includes_root": False,
             },
         },
+        "outdated": {
+            "outer": "safe user-managed ordinary hierarchy excluded from active sources",
+            "inner_batch": "generation-<old-generation>-<UTC YYYYMMDDTHHMMZ>",
+            "inner_items": "Knowledge Unit Envelope v2 roots at original source-relative paths",
+        },
         "mutation_boundary": {
             "stage_only": True,
-            "adds_missing_navigation_and_role_directories_only": True,
+            "adds_missing_navigation_and_fixed_directories_only": True,
             "creates_manifests_or_payloads": False,
             "moves_or_publishes_roots": False,
             "conversion_or_sync": False,
