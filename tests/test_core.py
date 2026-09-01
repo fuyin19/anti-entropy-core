@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ ROOT = Path(__file__).absolute().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from anti_entropy_core.constants import ABI, navigation_bytes  # noqa: E402
+from anti_entropy_core.envelope import _is_linklike as envelope_is_linklike  # noqa: E402
 from anti_entropy_core.paths import native_path  # noqa: E402
 from anti_entropy_core.protocol import dispatch  # noqa: E402
 
@@ -51,6 +53,12 @@ def _snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_reparse_attribute_is_treated_as_a_link_by_ku_validation(self) -> None:
+        class ReparseStat:
+            st_file_attributes = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+        self.assertTrue(envelope_is_linklike(ReparseStat()))
+
     def test_navigation_resources_are_exact_shared_contract(self) -> None:
         agents, claude = navigation_bytes()
         self.assertEqual(len(agents), 1695)

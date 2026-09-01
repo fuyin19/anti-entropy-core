@@ -3,17 +3,41 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .constants import COMMANDS
+from .constants import COLLABORATIVE_WORKSPACE_COMMANDS, COMMANDS
 from .envelope import inspect_envelope
 from .model import Issue, RequestError, ValidationFailure
 from .operations import capabilities, parse_path_request, repair_stage, validate_unit
 from .result import make_result
+from .workspace import (
+    collaborative_workspace_capabilities,
+    complete_workspace_stage,
+    inspect_workspace,
+    parse_workspace_request,
+    validate_workspace,
+)
 
 
 def dispatch(command: str, request: dict[str, Any]) -> dict[str, Any]:
     try:
-        if command not in COMMANDS:
+        if command not in (*COMMANDS, *COLLABORATIVE_WORKSPACE_COMMANDS):
             raise RequestError(f"unknown command: {command}")
+        if command == "collaborative_workspace.capabilities":
+            if request:
+                raise RequestError("collaborative_workspace.capabilities request must be empty")
+            return make_result(command, "ok", 0, data=collaborative_workspace_capabilities())
+        if command in COLLABORATIVE_WORKSPACE_COMMANDS:
+            path, contract = parse_workspace_request(request)
+            if command == "collaborative_workspace.inspect":
+                inspection = inspect_workspace(path, contract)
+                return make_result(command, "ok", 0, data=inspection.data(), issues=inspection.issues)
+            if command == "collaborative_workspace.validate":
+                inspection = validate_workspace(path, contract)
+                return make_result(command, "ok", 0, data=inspection.data())
+            inspection, changes = complete_workspace_stage(path, contract)
+            data = inspection.data()
+            data["changes"] = changes
+            data["completed"] = True
+            return make_result(command, "ok", 0, data=data)
         if command == "capabilities":
             if request:
                 raise RequestError("capabilities request must be empty")
@@ -76,4 +100,3 @@ def dispatch_wrapper(value: object) -> dict[str, Any]:
 
 
 __all__ = ["dispatch", "dispatch_wrapper"]
-

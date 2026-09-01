@@ -18,10 +18,15 @@ _CONTROL_FILES = {
     ".mcp.json",
 }
 _CONTROL_DIRECTORIES = {".claude", ".cursor"}
+_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _issue(code: str, message: str, path: str | None = None, **details: object) -> Issue:
     return Issue(code, message, path, details)
+
+
+def _is_linklike(value: os.stat_result, *, symlink: bool = False) -> bool:
+    return symlink or bool(getattr(value, "st_file_attributes", 0) & _REPARSE_ATTRIBUTE)
 
 
 def _scan(root: Path, issues: list[Issue]) -> tuple[dict[str, os.stat_result], dict[str, os.stat_result]]:
@@ -45,10 +50,10 @@ def _scan(root: Path, issues: list[Issue]) -> tuple[dict[str, os.stat_result], d
                 )
             else:
                 folded[key] = entry.name
-            if entry.is_symlink():
+            value = entry.stat(follow_symlinks=False)
+            if _is_linklike(value, symlink=entry.is_symlink()):
                 issues.append(_issue("link_not_allowed", "Links are not valid envelope entries", relative))
                 continue
-            value = entry.stat(follow_symlinks=False)
             if stat.S_ISDIR(value.st_mode):
                 directories[relative] = value
                 visit(Path(entry.path), relative)
@@ -160,7 +165,7 @@ def inspect_envelope(path: Path, private_root_files: tuple[str, ...]) -> Inspect
             (),
             (_issue("root_directory_required", "Knowledge-unit root does not exist", str(logical_root)),),
         )
-    if root.is_symlink() or not stat.S_ISDIR(root_stat.st_mode):
+    if _is_linklike(root_stat, symlink=root.is_symlink()) or not stat.S_ISDIR(root_stat.st_mode):
         return Inspection(
             logical_root,
             private_root_files,

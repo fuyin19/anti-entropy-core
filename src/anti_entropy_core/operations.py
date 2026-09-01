@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .constants import COMMANDS, ENVELOPE, NAVIGATION_CONTRACT, VERSION, navigation_bytes
+from .constants import (
+    COMMANDS,
+    ENVELOPE,
+    NAVIGATION_CONTRACT,
+    VERSION,
+    WORKSPACE_CONTRACTS,
+    navigation_bytes,
+)
 from .envelope import inspect_envelope
 from .model import Inspection, RequestError, ValidationFailure
 from .paths import logical_absolute, native_path
@@ -46,6 +53,12 @@ def capabilities() -> dict[str, Any]:
             "validate": common,
             "repair": common,
             "stage.complete": common,
+        },
+        "extensions": {
+            "collaborative_workspace": {
+                "capabilities_command": "collaborative_workspace.capabilities",
+                "contracts": list(WORKSPACE_CONTRACTS),
+            }
         },
         "mutation_boundary": {
             "stage_only": True,

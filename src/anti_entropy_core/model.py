@@ -48,15 +48,36 @@ class Inspection:
         }
 
 
+@dataclass(frozen=True)
+class WorkspaceInspection:
+    path: Path
+    contract: str
+    workspace_id: str | None
+    details: dict[str, Any]
+    issues: tuple[Issue, ...]
+
+    @property
+    def valid(self) -> bool:
+        return not self.issues
+
+    def data(self) -> dict[str, Any]:
+        return {
+            "path": str(self.path),
+            "contract": self.contract,
+            "valid": self.valid,
+            "workspace_id": self.workspace_id,
+            **self.details,
+        }
+
+
 class RequestError(ValueError):
     pass
 
 
 class ValidationFailure(ValueError):
-    def __init__(self, inspection: Inspection) -> None:
-        super().__init__("Knowledge unit does not satisfy Envelope v2")
+    def __init__(self, inspection: Inspection | WorkspaceInspection) -> None:
+        super().__init__("Directory does not satisfy the selected contract")
         self.inspection = inspection
 
 
-__all__ = ["Inspection", "Issue", "RequestError", "ValidationFailure"]
-
+__all__ = ["Inspection", "Issue", "RequestError", "ValidationFailure", "WorkspaceInspection"]
