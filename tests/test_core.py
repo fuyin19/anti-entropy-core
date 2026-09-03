@@ -12,14 +12,15 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+SKILL_ROOT = ROOT / "skills" / "anti-entropy-core"
+sys.path.insert(0, str(SKILL_ROOT / "src"))
 
 from anti_entropy_core.constants import ABI, navigation_bytes  # noqa: E402
 from anti_entropy_core.envelope import _is_linklike as envelope_is_linklike  # noqa: E402
 from anti_entropy_core.paths import native_path  # noqa: E402
 from anti_entropy_core.protocol import dispatch  # noqa: E402
 
-RUNNER = ROOT / "scripts" / "knowledge_unit_runner.py"
+RUNNER = SKILL_ROOT / "scripts" / "knowledge_unit_runner.py"
 RESULT_FIELDS = {"abi", "status", "exit_code", "command", "data", "issues"}
 
 

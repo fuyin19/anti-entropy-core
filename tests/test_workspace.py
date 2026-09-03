@@ -12,7 +12,8 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+SKILL_ROOT = ROOT / "skills" / "anti-entropy-core"
+sys.path.insert(0, str(SKILL_ROOT / "src"))
 
 from anti_entropy_core.constants import (  # noqa: E402
     ABI,
@@ -26,7 +27,7 @@ from anti_entropy_core.protocol import dispatch  # noqa: E402
 from anti_entropy_core.paths import native_path  # noqa: E402
 from anti_entropy_core.workspace import canonical_tree_digest, source_records_digest  # noqa: E402
 
-RUNNER = ROOT / "scripts" / "knowledge_unit_runner.py"
+RUNNER = SKILL_ROOT / "scripts" / "knowledge_unit_runner.py"
 RESULT_FIELDS = {"abi", "status", "exit_code", "command", "data", "issues"}
 HEX_A = "a" * 64
 
@@ -118,7 +119,7 @@ def _snapshot(root: Path) -> dict[str, tuple[str, bytes | None]]:
 class CollaborativeWorkspaceCoreTests(unittest.TestCase):
     def test_version_and_extension_discovery_preserve_legacy_command_list(self) -> None:
         legacy = dispatch("capabilities", {})
-        self.assertEqual(VERSION, "1.2.0")
+        self.assertEqual(VERSION, "1.2.1")
         self.assertEqual(legacy["data"]["commands"], ["capabilities", "inspect", "validate", "repair", "stage.complete"])
         self.assertEqual(
             legacy["data"]["extensions"]["collaborative_workspace"]["capabilities_command"],
